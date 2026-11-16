@@ -34,8 +34,14 @@
   function anchorOf(category) {
     var hit = null;
     (DATA.anchors || []).forEach(function (a) { if (a.category === (category || 'Other')) hit = a; });
-    if (hit) return { multiple: hit.multiple, comps: hit.comps };
-    return { multiple: DATA.global_anchor, comps: 0 };
+    if (hit) return { multiple: hit.multiple, comps: hit.comps, fallback: hit.fallback };
+    return { multiple: DATA.global_anchor, comps: 0, fallback: true };
+  }
+  function anchorLabel(category) {
+    var a = anchorOf(category);
+    var label = (category || 'Other') + ', ' + a.comps + ' live comparable' + (a.comps === 1 ? '' : 's');
+    if (a.fallback) label += ' — global fallback';
+    return label;
   }
   function impliedOf(row, model) {
     var anchor = anchorOf(row.category);
@@ -317,8 +323,7 @@
     });
     var example = '';
     if (top) {
-      var a = anchorOf(top.category);
-      example = top.name + ': ' + fmtUsd(top.tvl_usd) + ' TVL x ' + top.category_multiple + ' (' + (top.category || 'Other') + ' anchor, ' + a.comps + ' live comparables) x ' + top.growth_multiplier + ' growth x ' + top.maturity_multiplier + ' maturity x ' + top.chain_multiplier + ' chains = ' + fmtUsd(top.implied_value_usd) + '.';
+      example = top.name + ': ' + fmtUsd(top.tvl_usd) + ' TVL x ' + top.category_multiple + ' (' + anchorLabel(top.category) + ') x ' + top.growth_multiplier + ' growth x ' + top.maturity_multiplier + ' maturity x ' + top.chain_multiplier + ' chains = ' + fmtUsd(top.implied_value_usd) + '.';
     }
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
@@ -360,7 +365,7 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Category anchor (' + (row.category || 'Other') + ', ' + anchorOf(row.category).comps + ' live comparables)' }), el('b', { class: 'num', text: String(row.category_multiple) })),
+        el('div', null, el('span', { text: 'Category anchor (' + anchorLabel(row.category) + ')' }), el('b', { class: 'num', text: String(row.category_multiple) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
