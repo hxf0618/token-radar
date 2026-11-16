@@ -28,12 +28,26 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  // The anchor is the median market-cap-to-TVL ratio of the snapshot's live-token protocols in the
+  // row's category (at least 5 comparables, else the all-live median), exactly as lib/model.ts
+  // computes it at build time; the table below prints it.
+  function anchorOf(category) {
+    var hit = null;
+    (DATA.anchors || []).forEach(function (a) { if (a.category === (category || 'Other')) hit = a; });
+    if (hit) return { multiple: hit.multiple, comps: hit.comps };
+    return { multiple: DATA.global_anchor, comps: 0 };
+  }
   function impliedOf(row, model) {
+    var anchor = anchorOf(row.category);
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * model.growth_weight;
+    var growthMult = growth > model.growth_spike
+      ? 1 + (model.growth_spike / 100) * model.growth_weight + ((growth - model.growth_spike) / 100) * model.growth_weight * model.growth_spike_weight
+      : 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity));
+    var maturity = model.maturity_floor + model.maturity_range * Math.sqrt(Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days);
+    var chains = row.chains ? row.chains.length : 0;
+    var chainMult = 1 + Math.min(Math.max(chains - 1, 0), Math.round(model.chain_cap / model.chain_step)) * model.chain_step;
+    return Math.max(1, Math.round(row.tvl_usd * anchor.multiple * growthMult * maturity * chainMult));
   }
 
   function el(tag, attrs) {
@@ -78,13 +92,19 @@
     if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Supply $' + capital + ' of USDC to ' + name + ' on ' + chain + ' and keep the position open.';
     if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Provide $' + capital + ' of liquidity to ' + name + "'s main pool on " + chain + ' and keep the position open.';
     if (c.indexOf('bridge') >= 0) return 'Bridge $' + capital + ' of USDC to ' + chain + ' through ' + name + ' and use the bridged funds in its app.';
+    if (c.indexOf('basis') >= 0) return 'Open a delta-neutral basis position through ' + name + ' on ' + chain + ' with $' + capital + ', so funding payments accrue while the hedge holds.';
+    if (c.indexOf('cedefi') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' vault on ' + chain + ' and keep the receipt.';
     if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return "Stake $" + capital + " of the chain's staking asset through " + name + ' and keep the receipt.';
     if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return 'Deposit $' + capital + ' of USDC as margin on ' + name + ' and open one small hedge.';
     if (c.indexOf('prediction') >= 0) return 'Fund $' + capital + ' and place one market position on ' + name + '.';
-    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' vault on ' + chain + ' and keep the shares.';
+    if (c.indexOf('curator') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' risk-curator vault on ' + chain + " and keep the vault shares; check the vault's fee and the curator's record first.";
+    if (c.indexOf('allocator') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' vault on ' + chain + ' and keep the shares.';
     if (c.indexOf('stable') >= 0) return 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + '.';
     if (c.indexOf('rwa') >= 0) return "Mint $" + capital + " of the protocol's yield asset on " + chain + ' and hold it.';
     if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy.';
+    if (c.indexOf('governance') >= 0) return 'Lock or delegate $' + capital + ' of voting power through ' + name + ' on ' + chain + ' and vote on one proposal.';
+    if (c.indexOf('payments') >= 0) return 'Route $' + capital + ' of payments through ' + name + ' on ' + chain + ' and keep the receipts.';
+    if (c.indexOf('chain') >= 0) return 'Bridge $' + capital + ' to ' + name + " and use its flagship app, keeping the position open.";
     return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.';
   }
   function stepText(step) {
@@ -94,17 +114,21 @@
     return s;
   }
   function farmSteps(p) {
-    var chain = chainOf(p);
     var capital = capitalFor(p);
-    var hold = holdDaysFor(p.age_days);
+    var chain = chainOf(p);
+    var days = holdDaysFor(p.age_days);
+    var weeks = Math.ceil(days / 7);
+    var setupGas = p.chains && p.chains.length > 1 ? 8 : 4;
+    var total = capital + setupGas + 2 * weeks;
     return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
-    ].map(stepText);
+      'Check the protocol: open ' + p.name + "'s site and docs, confirm the TVL figure this board uses, and confirm that there is no token yet: a token already launched means the farm plan no longer applies.",
+      'Set up: create a fresh wallet on ' + chain + ', move in ' + fmtUsd(capital + setupGas) + ' of USDC plus $' + setupGas + ' in native gas for the setup transaction, and back up the seed phrase offline.',
+      actionFor(p, capital, chain),
+      'Stay active: return once a week for at least ' + days + ' days, about ' + weeks + ' weeks, making one real transaction each visit so the wallet reads as a user, not a bot; budget $2 of gas per week.',
+      'Keep records: note the wallet address, the transaction hash, the date and the amount after each step, and keep the screenshots; an airdrop claim will ask for proof of activity, not your memory.',
+      'Watch for the token: check the protocol once a week for a token announcement, and check the contract address on the official channels before touching anything; only trust links from the official site or official social account.',
+      'Risk and exit: points are not a promised airdrop, and this plan earns nothing if the protocol never launches a token; never pay to claim an airdrop, never approve an unlimited token spend, and exit by unwinding in reverse: withdraw the position, then bridge the funds back. Total cost of this plan: ' + fmtUsd(total) + ' (capital ' + fmtUsd(capital) + ' + setup gas $' + setupGas + ' + $2 per week for ' + weeks + ' weeks).'
+    ];
   }
 
   function readHash() {
@@ -283,13 +307,34 @@
 
   function modelPanel() {
     var m = DATA.model;
+    var top = DATA.rows[0];
+    var anchorRows = (DATA.anchors || []).map(function (a) {
+      return el('tr', null,
+        el('td', { text: a.category }),
+        el('td', { class: 'num', text: String(Math.round(a.multiple * 1e4) / 1e4) }),
+        el('td', { class: 'num', text: String(a.comps) + (a.fallback ? ' (global fallback)' : '') })
+      );
+    });
+    var example = '';
+    if (top) {
+      var a = anchorOf(top.category);
+      example = top.name + ': ' + fmtUsd(top.tvl_usd) + ' TVL x ' + top.category_multiple + ' (' + (top.category || 'Other') + ' anchor, ' + a.comps + ' live comparables) x ' + top.growth_multiplier + ' growth x ' + top.maturity_multiplier + ' maturity x ' + top.chain_multiplier + ' chains = ' + fmtUsd(top.implied_value_usd) + '.';
+    }
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x category anchor x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ', surge past ' + m.growth_spike + '% at quarter weight) x (' + m.maturity_floor + ' + ' + m.maturity_range + ' x sqrt(min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ')) x (1 + min(chains - 1, 5) x ' + m.chain_step + ') )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'The anchor is the median market-cap-to-TVL ratio of the snapshot\u2019s live-token protocols in the same category, where a category has at least ' + m.category_min_comps + ' of them; otherwise the median over all ' + DATA.global_anchor_comps + ' live protocols, ' + (Math.round(DATA.global_anchor * 1e4) / 1e4) + '. TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' }),
+      el('h3', { text: 'Category anchors, from this snapshot' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'anchors' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Anchor (mcap / TVL)' }), el('th', { scope: 'col', text: 'Live comparables' }))),
+          el('tbody', null, anchorRows)
+        )
+      ),
+      el('p', { class: 'sub', text: 'Worked example, the top row: ' + example })
     );
   }
 
@@ -315,10 +360,13 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
+        el('div', null, el('span', { text: 'Category anchor (' + (row.category || 'Other') + ', ' + anchorOf(row.category).comps + ' live comparables)' }), el('b', { class: 'num', text: String(row.category_multiple) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+        el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: String(row.chain_multiplier) })),
+        el('div', null, el('span', { text: 'Farm plan total cost' }), el('b', { class: 'num', text: fmtUsd(row.farm_total_cost_usd) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
